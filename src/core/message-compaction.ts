@@ -1,6 +1,6 @@
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 
-import { extractMessageTextContent } from "./messages/message-content.js";
+import { extractMessageTextContent } from "./message-content.js";
 
 export const CONSUMED_TOOL_MARKER_PREFIX = "[consumed:";
 
@@ -32,6 +32,53 @@ const getToolBatchEndIndex = (messages: BaseMessage[], toolCallIndex: number): n
   return batchEnd;
 };
 
+const isTerminalAgentReply = (message: BaseMessage | undefined): boolean => {
+  if (!(message instanceof AIMessage)) {
+    return false;
+  }
+
+  const text = extractMessageTextContent(message.content).trim();
+  return text.length > 0 && (message.tool_calls?.length ?? 0) === 0;
+};
+
+/** True while the trailing suffix is still inside a specialist tool loop. */
+export const isAgentToolLoopInFlight = (messages: BaseMessage[]): boolean => {
+  const last = messages[messages.length - 1];
+
+  if (!last) {
+    return false;
+  }
+
+  if (last instanceof ToolMessage) {
+    return true;
+  }
+
+  if (last instanceof AIMessage) {
+    if ((last.tool_calls?.length ?? 0) > 0) {
+      return true;
+    }
+
+    return !isTerminalAgentReply(last);
+  }
+
+  return false;
+};
+
+const isConsumingFollowUp = (message: BaseMessage | undefined): boolean => {
+  if (!message) {
+    return false;
+  }
+
+  if (message instanceof AIMessage || message._getType() === "ai") {
+    const text = extractMessageTextContent(message.content).trim();
+    const toolCalls = message instanceof AIMessage ? message.tool_calls ?? [] : [];
+    return text.length > 0 || toolCalls.length > 0;
+  }
+
+  // Human / system / other messages after a tool batch count as consuming the round.
+  return !(message instanceof ToolMessage || message._getType() === "tool");
+};
+
 const collectConsumedToolIndexes = (messages: BaseMessage[]): Set<number> => {
   const consumedIndexes = new Set<number>();
 
@@ -46,6 +93,12 @@ const collectConsumedToolIndexes = (messages: BaseMessage[]): Set<number> => {
       continue;
     }
 
+    // Keep raw tool bodies while the only follow-up is an empty AI reply so empty
+    // handoffs can still surface authoritative tool results to the supervisor.
+    if (!isConsumingFollowUp(messages[batchEnd + 1])) {
+      continue;
+    }
+
     for (let toolIndex = index + 1; toolIndex <= batchEnd; toolIndex += 1) {
       if (messages[toolIndex] instanceof ToolMessage) {
         consumedIndexes.add(toolIndex);
@@ -57,6 +110,10 @@ const collectConsumedToolIndexes = (messages: BaseMessage[]): Set<number> => {
 };
 
 export const compactConsumedToolResults = (messages: BaseMessage[]): BaseMessage[] => {
+  if (isAgentToolLoopInFlight(messages)) {
+    return messages;
+  }
+
   const consumedIndexes = collectConsumedToolIndexes(messages);
 
   if (consumedIndexes.size === 0) {

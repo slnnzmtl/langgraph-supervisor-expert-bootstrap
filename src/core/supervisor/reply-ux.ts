@@ -14,9 +14,17 @@ export type ReplyUxConfig = {
   buildPostHandoffFinishSystemPrompt: (ctx: PostHandoffFinishContext) => string;
   buildPostHandoffFinishSafeFallback: (ctx: PostHandoffFinishContext) => string;
   buildFailureReplyInstruction: (failureContext: string) => string;
+  /** User-facing text when the failure finalizer is empty or returns routing JSON. */
+  buildFailureReplySafeFallback: (failureContext: string) => string;
+  genericCompletionFallbacks?: ReadonlySet<string>;
 };
 
+export const DEFAULT_GENERIC_COMPLETION_FALLBACKS = new Set([
+  "Completed the configuration task.",
+]);
+
 export const defaultReplyUxConfig: ReplyUxConfig = {
+  genericCompletionFallbacks: DEFAULT_GENERIC_COMPLETION_FALLBACKS,
   buildEmptyReplySystemPrompt: ({ agentName, toolContext }) => [
     "You write a final user-facing status message for a specialized agent that stopped without replying.",
     "Return plain text only. Do not return JSON, routing instructions, tool calls, or a plan for future work.",
@@ -47,6 +55,13 @@ export const defaultReplyUxConfig: ReplyUxConfig = {
     toolContext.length > 0
       ? `${agentName} completed your request${latestUserRequest ? `: ${latestUserRequest}` : ""}. Tool results:\n${toolContext}`
       : `${agentName} completed your request${latestUserRequest ? `: ${latestUserRequest}` : ""}.`,
-  buildFailureReplyInstruction: (failureContext) =>
-    `The normal supervisor routing failed. Produce the final user-facing reply in plain text. Explain the issue briefly and helpfully, and do not output JSON or call tools. Failure context: ${failureContext}`,
+  buildFailureReplyInstruction: () =>
+    [
+      "The normal supervisor routing failed due to a temporary internal issue.",
+      "Produce the final user-facing reply in plain text.",
+      "Apologize briefly and suggest trying again.",
+      "Do not output JSON, call tools, or mention internal errors, caches, APIs, or stack traces.",
+    ].join(" "),
+  buildFailureReplySafeFallback: () =>
+    "I couldn't finish routing your request. Please try again in a moment.",
 };

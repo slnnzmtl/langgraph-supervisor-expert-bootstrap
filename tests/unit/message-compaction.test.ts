@@ -1,4 +1,4 @@
-import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -32,7 +32,7 @@ describe("compactConsumedToolResults", () => {
     expect(compacted[2]?.content).toContain("Long setup body");
   });
 
-  it("replaces consumed tool bodies after the next assistant message arrives", () => {
+  it("keeps raw tool bodies while the agent tool loop is still in flight", () => {
     const readToolResult = new ToolMessage({
       tool_call_id: "read-1",
       name: "read_file",
@@ -64,12 +64,12 @@ describe("compactConsumedToolResults", () => {
     const compacted = compactConsumedToolResults(messages);
 
     expect((compacted[2] as ToolMessage).tool_call_id).toBe("read-1");
-    expect(compacted[2]?.content).toBe(formatConsumedToolMarker("read_file"));
-    expect(compacted[2]?.content).not.toContain("Long setup body");
+    expect(compacted[2]?.content).toContain("Long setup body");
+    expect(compacted[2]?.content).not.toBe(formatConsumedToolMarker("read_file"));
   });
 
   it("compacts all completed rounds once a final reply is appended", () => {
-    let messages = [
+    let messages: BaseMessage[] = [
       new HumanMessage("save note"),
       new AIMessage({
         content: "",
@@ -113,5 +113,35 @@ describe("compactConsumedToolResults", () => {
     expect(readResult?.content).toBe(formatConsumedToolMarker("read_file"));
     expect(writeResult?.content).toBe(formatConsumedToolMarker("write_file"));
     expect(messages.at(-1)?.content).toBe("Saved your note.");
+  });
+
+  it("keeps raw tool bodies when the only follow-up is an empty AI reply", () => {
+    const messages = reduceAgentMessages(
+      [
+        new HumanMessage("show routine"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{
+            name: "read_file",
+            args: { relativePath: "routine/July/July 24 - Fri.md" },
+            id: "read-1",
+            type: "tool_call",
+          }],
+        }),
+        new ToolMessage({
+          tool_call_id: "read-1",
+          name: "read_file",
+          content: "## Summary\n- [ ] Gym",
+        }),
+      ],
+      new AIMessage({ content: "" }),
+    );
+
+    const readResult = messages.find(
+      (message) => message instanceof ToolMessage && message.tool_call_id === "read-1",
+    ) as ToolMessage | undefined;
+
+    expect(readResult?.content).toContain("## Summary");
+    expect(readResult?.content).not.toBe(formatConsumedToolMarker("read_file"));
   });
 });
