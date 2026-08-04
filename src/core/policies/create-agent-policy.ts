@@ -5,8 +5,8 @@ import { createUnavailableGraphBundle } from "../agents/runtime-agent-graph-bund
 import { resolveModel, type RuntimeAgentExecutionContext } from "../execution/context.js";
 import {
   createSubAgentGraphBundle,
-  mapDefaultSubAgentResult,
 } from "../execution/create-sub-agent.js";
+import { mapSubAgentResult } from "../execution/map-sub-agent-result.js";
 import {
   createRuntimeAgentNode,
   type RuntimeAgentNodeConfig,
@@ -14,7 +14,6 @@ import {
   type SubAgentToolSource,
 } from "../execution/runtime-node.js";
 import type { SubAgentState, SubAgentStateUpdate } from "../execution/sub-agent-state.js";
-import type { AgentStateUpdate } from "../state.js";
 import type { SkillCatalog } from "../skills/catalog.js";
 import type { RuntimeShellFormatters } from "../system-context.js";
 import type { RuntimeAgentDefinition } from "../types/agent.js";
@@ -40,8 +39,6 @@ export type CreateAgentPolicyConfig<
   TCapabilityDeps extends Record<string, unknown> = Record<string, unknown>,
   TExtra extends Record<string, unknown> = Record<string, never>,
 > = {
-  /** Selects optional LLM hooks; tools always come from capabilityIds. */
-  executor: string;
   displayName?: string;
   requireShellFormatters?: boolean;
   resolveDeps?: (context: RuntimeAgentExecutionContext<TCapabilityDeps>, definition: RuntimeAgentDefinition) => TExtra | null;
@@ -59,10 +56,6 @@ export type CreateAgentPolicyConfig<
   logLabel?: string;
   buildErrorMessage?: RuntimeAgentNodeConfig["buildErrorMessage"];
   selectToolsForTurn?: RuntimeAgentNodeConfig["selectToolsForTurn"];
-  mapResult?: (
-    result: SubAgentState,
-    config: { maxSteps: number; name: string },
-  ) => AgentStateUpdate;
 };
 
 const createAgentLlmNode = (
@@ -82,12 +75,12 @@ export const createAgentPolicy = <
   config: CreateAgentPolicyConfig<TCapabilityDeps, TExtra>,
   options: AgentPolicyToolkitOptions = {},
 ): RuntimeAgentPolicy => ({
-  executor: config.executor,
   createGraphBundle: (context, definition) => {
     const policyContext = context as RuntimeAgentExecutionContext<TCapabilityDeps>;
+    const policyLabel = config.displayName ?? definition.name;
     const needsHooks = config.createHooks !== undefined;
     if (config.requireShellFormatters !== false && needsHooks && !options.shellFormatters) {
-      throw new Error(`createAgentPolicy(${config.executor}) requires runtime shell formatters.`);
+      throw new Error(`createAgentPolicy(${policyLabel}) requires runtime shell formatters.`);
     }
 
     const resolvedExtra = config.resolveDeps?.(policyContext, definition) ?? ({} as TExtra);
@@ -131,7 +124,8 @@ export const createAgentPolicy = <
         }),
       createLlmNode: (agentDeps, agentTools) =>
         createAgentLlmNode(agentDeps.model, agentDeps.definition, agentTools, nodeConfig),
-      mapResult: config.mapResult ?? ((result, mapConfig) => mapDefaultSubAgentResult(result, mapConfig)),
+      mapResult: (result, mapConfig) =>
+        mapSubAgentResult(result, mapConfig, nodeConfig.resultMapping ?? {}),
     });
   },
 });

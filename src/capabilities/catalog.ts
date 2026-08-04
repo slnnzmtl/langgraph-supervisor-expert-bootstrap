@@ -1,48 +1,54 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 
+import { NONE_CAPABILITY_ID, NONE_CAPABILITY_PROVIDER } from "./none-capability.js";
 import {
-  isCapabilityAvailable,
   isCapabilityGrantable,
-  type CapabilityAvailabilityContext,
   type CapabilityDescriptor,
   type CapabilityProvider,
 } from "./types.js";
 
 export type CapabilityCatalog = {
   listDescriptors(): CapabilityDescriptor[];
-  listAvailable(context: CapabilityAvailabilityContext): CapabilityDescriptor[];
-  listGrantable(context: CapabilityAvailabilityContext): CapabilityDescriptor[];
-  validateIds(
-    ids: readonly string[],
-    context: CapabilityAvailabilityContext,
-  ): void;
-  validateGrantableIds(
-    ids: readonly string[],
-    context: CapabilityAvailabilityContext,
-  ): void;
-  resolveTools(
-    ids: readonly string[],
-    deps: Record<string, unknown>,
-    context: CapabilityAvailabilityContext,
-  ): StructuredToolInterface[];
-  formatCatalog(context: CapabilityAvailabilityContext): string;
-  formatGrantableCatalog(context: CapabilityAvailabilityContext): string;
-  createIdSchema(): z.ZodEnum<Record<string, string>>;
+  listAvailable(deps: Record<string, unknown>): CapabilityDescriptor[];
+  listGrantable(deps: Record<string, unknown>): CapabilityDescriptor[];
+  /** Non-grantable capability ids reserved for a specific persisted agent id. */
+  reservedCapabilityIdsForAgent(agentId: string): readonly string[];
+  validateIds(ids: readonly string[], deps: Record<string, unknown>): void;
+  validateGrantableIds(ids: readonly string[], deps: Record<string, unknown>): void;
+  resolveTools(ids: readonly string[], deps: Record<string, unknown>): StructuredToolInterface[];
+  formatGrantableCatalog(deps: Record<string, unknown>): string;
+  createGrantableIdSchema(deps: Record<string, unknown>): z.ZodEnum<Record<string, string>>;
+};
+
+const withNoneCapability = (
+  providers: CapabilityProvider<Record<string, unknown>>[],
+): CapabilityProvider<Record<string, unknown>>[] => {
+  if (providers.some((provider) => provider.descriptor.id === NONE_CAPABILITY_ID)) {
+    return providers;
+  }
+
+  return [NONE_CAPABILITY_PROVIDER, ...providers];
 };
 
 export const createCapabilityCatalog = (
   providers: CapabilityProvider<Record<string, unknown>>[],
 ): CapabilityCatalog => {
-  const providerById = new Map(providers.map((provider) => [provider.descriptor.id, provider]));
-  const descriptors = providers.map((provider) => provider.descriptor);
-  const descriptorIds = descriptors.map((descriptor) => descriptor.id) as [string, ...string[]];
+  const resolvedProviders = withNoneCapability(providers);
+  const providerById = new Map(
+    resolvedProviders.map((provider) => [provider.descriptor.id, provider]),
+  );
+  const descriptors = resolvedProviders.map((provider) => provider.descriptor);
 
-  const listAvailable = (context: CapabilityAvailabilityContext): CapabilityDescriptor[] =>
-    descriptors.filter((descriptor) => isCapabilityAvailable(descriptor, context));
+  const listAvailable = (deps: Record<string, unknown>): CapabilityDescriptor[] =>
+    resolvedProviders
+      .filter((provider) => provider.isAvailable(deps))
+      .map((provider) => provider.descriptor);
 
-  const listGrantable = (context: CapabilityAvailabilityContext): CapabilityDescriptor[] =>
-    listAvailable(context).filter((descriptor) => isCapabilityGrantable(descriptor));
+  const listGrantable = (deps: Record<string, unknown>): CapabilityDescriptor[] =>
+    resolvedProviders
+      .filter((provider) => isCapabilityGrantable(provider, deps))
+      .map((provider) => provider.descriptor);
 
   const formatDescriptorList = (entries: CapabilityDescriptor[], emptyMessage: string): string => {
     if (entries.length === 0) {
@@ -61,8 +67,18 @@ export const createCapabilityCatalog = (
 
     listGrantable,
 
-    validateIds(ids: readonly string[], context: CapabilityAvailabilityContext): void {
-      const availableIds = new Set(listAvailable(context).map((entry) => entry.id));
+    reservedCapabilityIdsForAgent(agentId: string): readonly string[] {
+      return descriptors
+        .filter(
+          (descriptor) =>
+            descriptor.grantable === false
+            && (descriptor.reservedForAgentIds?.includes(agentId) ?? false),
+        )
+        .map((descriptor) => descriptor.id);
+    },
+
+    validateIds(ids: readonly string[], deps: Record<string, unknown>): void {
+      const availableIds = new Set(listAvailable(deps).map((entry) => entry.id));
 
       for (const id of ids) {
         if (!providerById.has(id)) {
@@ -75,31 +91,27 @@ export const createCapabilityCatalog = (
       }
     },
 
-    validateGrantableIds(ids: readonly string[], context: CapabilityAvailabilityContext): void {
-      const grantableIds = new Set(listGrantable(context).map((entry) => entry.id));
-      const availableIds = new Set(listAvailable(context).map((entry) => entry.id));
+    validateGrantableIds(ids: readonly string[], deps: Record<string, unknown>): void {
+      const grantableIds = new Set(listGrantable(deps).map((entry) => entry.id));
 
       for (const id of ids) {
         if (!providerById.has(id)) {
           throw new Error(`Unknown capability: ${id}`);
         }
 
-        if (!availableIds.has(id)) {
-          throw new Error(`Capability is unavailable in this deployment: ${id}`);
-        }
-
         if (!grantableIds.has(id)) {
+          const provider = providerById.get(id);
+          if (provider && !provider.isAvailable(deps)) {
+            throw new Error(`Capability is unavailable in this deployment: ${id}`);
+          }
+
           throw new Error(`Capability cannot be granted to runtime agents: ${id}`);
         }
       }
     },
 
-    resolveTools(
-      ids: readonly string[],
-      deps: Record<string, unknown>,
-      context: CapabilityAvailabilityContext,
-    ): StructuredToolInterface[] {
-      this.validateIds(ids, context);
+    resolveTools(ids: readonly string[], deps: Record<string, unknown>): StructuredToolInterface[] {
+      this.validateIds(ids, deps);
 
       const seen = new Set<string>();
       const tools: StructuredToolInterface[] = [];
@@ -123,26 +135,21 @@ export const createCapabilityCatalog = (
       return tools;
     },
 
-    formatCatalog(context: CapabilityAvailabilityContext): string {
+    formatGrantableCatalog(deps: Record<string, unknown>): string {
       return formatDescriptorList(
-        listAvailable(context),
-        "No capabilities are available in this deployment.",
-      );
-    },
-
-    formatGrantableCatalog(context: CapabilityAvailabilityContext): string {
-      return formatDescriptorList(
-        listGrantable(context),
+        listGrantable(deps),
         "No grantable capabilities are available in this deployment.",
       );
     },
 
-    createIdSchema(): z.ZodEnum<Record<string, string>> {
-      if (descriptorIds.length === 0) {
-        throw new Error("Capability catalog must contain at least one descriptor.");
+    createGrantableIdSchema(deps: Record<string, unknown>): z.ZodEnum<Record<string, string>> {
+      const grantableIds = listGrantable(deps).map((entry) => entry.id) as [string, ...string[]];
+
+      if (grantableIds.length === 0) {
+        throw new Error("No grantable capabilities are available in this deployment.");
       }
 
-      return z.enum(descriptorIds as [string, ...string[]]);
+      return z.enum(grantableIds);
     },
   };
 };
