@@ -135,10 +135,14 @@ Set `systemAgent: {}` (or `{ modelKey, maxSteps }`) on the pack to enable the vi
 | Export | Role |
 |---|---|
 | `createCronJobRepository` / `createCronJobRepositoryForConfig` | File-backed jobs |
-| `setupCron` / `startCronBootstrap` | Schedule + launch |
-| `createRuntimeCronService` / `reconcileRuntimeCron` | Live reconcile |
+| `createReadOnlyCronJobRepository` | Read-only wrapper when `allowDataWrites` is false |
+| `SUPERVISE_CRON_ROUTE` / `createCronTriggerResolver` / `buildCronTriggerForJob` / `resolveCronTriggerRoute` / `isCronTargetRoute` | Trigger routing (supervise vs agent) |
+| `createRuntimeCronService` / `createLazyCronService` | Live schedule + reconcile |
+| `startCronBootstrap` | Load jobs and start the cron service |
 | `watchCronJobDefinitions` | Reload on file change |
-| `createCronRunner` | Invoke graph for a job (continuation cap: `MAX_GRAPH_CONTINUATIONS`) |
+| `createCronRunner` | Invoke graph for a job |
+
+Types: `CronJobDefinition`, `CronJobRun`, `CronJobResult`, `CronExecutionReporter`, `RuntimeCronService`, `CronJobWatcher`, `CronRunLedger`, `CronRunRecord`, `CronTargetAgentIdsSource`.
 
 Jobs can target a runtime agent or the supervise cron route. Pair with `watchRuntimeAgentDefinitions` + `runtime.recompile()` for agent-definition hot reload.
 
